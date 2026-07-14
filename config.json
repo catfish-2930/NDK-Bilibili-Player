@@ -1,0 +1,10 @@
+{
+  "settings": [
+    {
+      "key": "recommendationQuery",
+      "label": "Initial search query",
+      "type": "text",
+      "default": "华语 KTV"
+    }
+  ]
+}
