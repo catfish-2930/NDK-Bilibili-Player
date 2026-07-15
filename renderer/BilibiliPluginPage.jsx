@@ -14,6 +14,7 @@ function BilibiliPluginPage({ onEnqueueMedia, onShowToast, KeyboardComponent }) 
   const [totalPages, setTotalPages] = useState(1)
   const [hasNext, setHasNext] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [partLoadingId, setPartLoadingId] = useState('')
   const [message, setMessage] = useState('请输入关键词搜索 Bilibili 视频。')
   const [keyboardOpen, setKeyboardOpen] = useState(false)
   const [partPicker, setPartPicker] = useState(null)
@@ -63,13 +64,13 @@ function BilibiliPluginPage({ onEnqueueMedia, onShowToast, KeyboardComponent }) 
 
   const selectVideo = async (video) => {
     try {
-      setLoading(true)
+      setPartLoadingId(video.id)
       const result = await window.api.plugins.invoke('plugin:bilibili-player:pages', video)
       if (!result?.ok) throw new Error(result?.error || 'Unable to read Bilibili video parts.')
       const pages = Array.isArray(result.pages) ? result.pages : []
       if (pages.length > 1) setPartPicker({ video, pages })
       else await enqueue({ ...video, page: pages[0]?.page || 1 })
-    } catch (error) { setMessage(error.message || 'Unable to read Bilibili video parts.') } finally { setLoading(false) }
+    } catch (error) { setMessage(error.message || 'Unable to read Bilibili video parts.') } finally { setPartLoadingId('') }
   }
 
   const selectPart = async (part) => {
@@ -84,8 +85,8 @@ function BilibiliPluginPage({ onEnqueueMedia, onShowToast, KeyboardComponent }) 
   return <section className="bilibili-plugin-page">
     <div className="bilibili-plugin-title"><BilibiliIcon /><span>Bilibili</span></div>
     <div className="bilibili-video-grid">
-      {!loading && videos.map((video) => <button className="bilibili-video-card" type="button" key={video.id} onClick={() => selectVideo(video)}>
-        <div className="bilibili-video-thumb">{video.thumbnail && <img src={video.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer" />}{video.isMusic && <span>MUSIC</span>}</div>
+      {!loading && videos.map((video) => <button className="bilibili-video-card" type="button" key={video.id} disabled={Boolean(partLoadingId)} onClick={() => selectVideo(video)}>
+        <div className="bilibili-video-thumb">{video.thumbnail && <img src={video.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer" />}{partLoadingId === video.id && <i className="bilibili-card-spinner" aria-label="Loading video parts" />}{video.isMusic && <span>MUSIC</span>}</div>
         <div className="bilibili-video-name">{video.title}</div><div className="bilibili-video-artist">{video.artist || '-'}</div>
       </button>)}
       {loading ? <div className="bilibili-state bilibili-loading-state"><span className="bilibili-spinner" aria-hidden="true" /><span>Loading...</span></div> : message && <div className="bilibili-state">{message}</div>}
