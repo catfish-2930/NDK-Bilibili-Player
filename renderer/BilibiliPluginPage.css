@@ -192,7 +192,7 @@
 .bilibili-part-modal {
   position: fixed;
   z-index: 50;
-  inset: 0 0 var(--bottom-bar-height, 96px);
+  inset: 0 0 164px;
   display: grid;
   place-items: center;
   padding: 16px 32px;
@@ -200,7 +200,7 @@
 }
 .bilibili-part-dialog {
   width: min(760px, 90vw);
-  max-height: calc(100vh - var(--bottom-bar-height, 96px) - 32px);
+  max-height: min(520px, calc(100vh - 188px));
   display: flex;
   flex-direction: column;
   overflow: hidden;
