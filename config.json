@@ -2,9 +2,9 @@
   "settings": [
     {
       "key": "recommendationQuery",
-      "label": "Initial search query",
+      "label": "Recommendation query",
       "type": "text",
-      "default": "华语 KTV"
+      "default": "抖音歌曲2026"
     }
   ]
 }

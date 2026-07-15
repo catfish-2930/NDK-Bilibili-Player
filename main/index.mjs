@@ -87,11 +87,12 @@ async function search(query, page) {
   const rawTotalPages = Number(
     pageInfo.numPages || pageInfo.num_pages || response.data?.numPages || response.data?.num_pages || 0
   )
-  // Bili occasionally omits its total page field for anonymous clients. The
-  // list still honors `page`, so keep Next available while it returns a full page.
+  // Bili occasionally omits its total page field for anonymous clients. Do not
+  // infer the end from a short result page: filtered/inserted search entries
+  // can make a page smaller than page_size even while later pages exist.
   const videos = (response.data?.result || []).map(toVideo).filter((video) => video.id && video.webpageUrl)
-  const hasNext = rawTotalPages > 0 ? currentPage < rawTotalPages : videos.length >= 10
-  const totalPages = rawTotalPages > 0 ? Math.max(1, rawTotalPages) : hasNext ? currentPage + 1 : currentPage
+  const hasNext = rawTotalPages > 0 ? currentPage < rawTotalPages : videos.length > 0
+  const totalPages = rawTotalPages > 0 ? Math.max(1, rawTotalPages) : null
   return {
     ok: true,
     videos,
@@ -103,27 +104,49 @@ async function search(query, page) {
   }
 }
 
+async function getVideoPages(video) {
+  const bvid = String(video?.id || '').trim()
+  if (!/^BV/i.test(bvid)) throw new Error('Invalid Bilibili video.')
+  const response = await fetchJson(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`)
+  if (response.code !== 0 || !response.data) throw new Error(response.message || 'Unable to read Bilibili video parts.')
+  const pages = Array.isArray(response.data.pages) ? response.data.pages : []
+  return pages.map((item, index) => ({
+    page: Number(item.page || index + 1),
+    cid: String(item.cid || ''),
+    title: String(item.part || `P${index + 1}`),
+    duration: Number(item.duration || 0)
+  })).filter((item) => item.cid)
+}
+
 export function register({ ipcMain, plugin, getConfig, channelPrefix }) {
   if (registered) return
   registered = true
-  for (const action of ['recommend', 'search', 'queue']) ipcMain.removeHandler(`${channelPrefix}:${action}`)
+  for (const action of ['recommend', 'search', 'pages', 'queue']) ipcMain.removeHandler(`${channelPrefix}:${action}`)
 
   ipcMain.handle(`${channelPrefix}:recommend`, async (_event, payload) => {
-    try { return await search(getConfig().recommendationQuery, payload?.page) } catch (error) { return { ok: false, error: error.message } }
+    try {
+      const query = String(getConfig().recommendationQuery || '').trim()
+      return { ...(await search(query, payload?.page)), query }
+    } catch (error) { return { ok: false, error: error.message } }
   })
   ipcMain.handle(`${channelPrefix}:search`, async (_event, payload) => {
     try { return await search(payload?.query, payload?.page) } catch (error) { return { ok: false, error: error.message } }
   })
+  ipcMain.handle(`${channelPrefix}:pages`, async (_event, video) => {
+    try { return { ok: true, pages: await getVideoPages(video) } } catch (error) { return { ok: false, error: error.message } }
+  })
   ipcMain.handle(`${channelPrefix}:queue`, async (_event, video) => {
     const id = String(video?.id || '').trim()
+    const page = Math.max(1, Math.trunc(Number(video?.page) || 1))
     const webpageUrl = String(video?.webpageUrl || '').trim()
     if (!id || !/^https:\/\/www\.bilibili\.com\/video\/BV/i.test(webpageUrl)) return { ok: false, error: 'Invalid Bilibili video.' }
+    const selectedUrl = page > 1 ? `${webpageUrl}${webpageUrl.includes('?') ? '&' : '?'}p=${page}` : webpageUrl
     return {
       ok: true,
       mediaItem: {
-        title: String(video.title || id), artist: String(video.artist || ''), path: webpageUrl,
+        title: String(video.title || id), artist: String(video.artist || ''), path: selectedUrl,
         thumbnail: String(video.thumbnail || ''), sourcePluginId: plugin.id, externalId: id,
-        mediaSource: { backend: 'libmpv-bilibili', webpageUrl, title: String(video.title || id), thumbnail: String(video.thumbnail || '') }
+        mediaSource: { backend: 'libmpv-bilibili', webpageUrl: selectedUrl, title: String(video.title || id), thumbnail: String(video.thumbnail || '') }
       }
     }
   })

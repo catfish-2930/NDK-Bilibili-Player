@@ -1,7 +1,7 @@
 {
   "id": "bilibili-player",
   "name": "NDK-Bilibili Player",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Search Bilibili videos and add their webpage URLs to the playback queue.",
   "type": "Multimedia",
   "github": "https://github.com/catfish-2930/NDK-Bilibili-Player",
@@ -11,6 +11,9 @@
       "label": "Bilibili",
       "route": "/plugins/bilibili-player",
       "order": 110
+    },
+    "settings": {
+      "route": "/settings/plugins/bilibili-player"
     }
   },
   "renderer": {
