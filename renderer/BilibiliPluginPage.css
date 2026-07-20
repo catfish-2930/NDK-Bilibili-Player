@@ -76,7 +76,7 @@
   border-top-color: #fff;
   border-radius: 50%;
   transform: translate(-50%, -50%);
-  animation: bilibili-spin 800ms linear infinite;
+  animation: bilibili-card-spin 800ms linear infinite;
 }
 .bilibili-video-name {
   display: -webkit-box;
@@ -129,6 +129,14 @@
 @keyframes bilibili-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+@keyframes bilibili-card-spin {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
   }
 }
 .bilibili-footer {

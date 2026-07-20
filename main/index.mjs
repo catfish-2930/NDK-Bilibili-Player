@@ -9,6 +9,9 @@ const MIXIN_KEY_ENC_TAB = [
   21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52
 ]
 const WBI_TTL_MS = 30 * 60 * 1000
+const VIDEO_PAGES_TTL_MS = 30 * 60 * 1000
+
+if (!(state.videoPages instanceof Map)) state.videoPages = new Map()
 
 function fetchJson(url) {
   return new Promise((resolve, reject) => {
@@ -158,13 +161,17 @@ async function search(query, page) {
 async function getVideoPages(video) {
   const bvid = String(video?.id || '').trim()
   if (!/^BV/i.test(bvid)) throw new Error('Invalid Bilibili video.')
+  const cached = state.videoPages.get(bvid)
+  if (cached && Date.now() - cached.createdAt < VIDEO_PAGES_TTL_MS) {
+    return cached.pages.map((page) => ({ ...page }))
+  }
   const response = await fetchJson(
     `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`
   )
   if (response.code !== 0 || !response.data)
     throw new Error(response.message || 'Unable to read Bilibili video parts.')
   const pages = Array.isArray(response.data.pages) ? response.data.pages : []
-  return pages
+  const normalizedPages = pages
     .map((item, index) => ({
       page: Number(item.page || index + 1),
       cid: String(item.cid || ''),
@@ -172,6 +179,8 @@ async function getVideoPages(video) {
       duration: Number(item.duration || 0)
     }))
     .filter((item) => item.cid)
+  state.videoPages.set(bvid, { pages: normalizedPages, createdAt: Date.now() })
+  return normalizedPages.map((page) => ({ ...page }))
 }
 
 export function register({ ipcMain, plugin, getConfig, channelPrefix }) {
