@@ -3,6 +3,7 @@ import https from 'https'
 
 let registered = false
 const state = (globalThis.__karaokeBilibiliPlayerState ||= { wbi: null })
+const searchStates = state.searchStates || (state.searchStates = new Map())
 const MIXIN_KEY_ENC_TAB = [
   46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28,
   14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54,
@@ -10,6 +11,9 @@ const MIXIN_KEY_ENC_TAB = [
 ]
 const WBI_TTL_MS = 30 * 60 * 1000
 const VIDEO_PAGES_TTL_MS = 30 * 60 * 1000
+const SEARCH_TTL_MS = 10 * 60 * 1000
+const DEFAULT_PAGE_SIZE = 10
+const MAX_PAGE_SIZE = 50
 
 if (!(state.videoPages instanceof Map)) state.videoPages = new Map()
 
@@ -103,29 +107,17 @@ function toVideo(item) {
   }
 }
 
-async function search(query, page) {
-  const keyword = String(query || '').trim()
-  if (!keyword)
-    return {
-      ok: true,
-      videos: [],
-      page: 1,
-      pageSize: 10,
-      totalPages: 1,
-      hasPrev: false,
-      hasNext: false
-    }
-  const currentPage = Math.max(1, Math.trunc(Number(page) || 1))
+async function fetchSearchPage(keyword, sourcePage) {
   const key = await getWbiKey()
   // Match Bilibili's web search page (/all), which uses the comprehensive
   // search endpoint and exposes the video result group for multi-word queries.
-  const requestUrl = `https://api.bilibili.com/x/web-interface/wbi/search/all/v2?${signedQuery({ search_type: 'video', keyword, page: currentPage }, key)}`
+  const requestUrl = `https://api.bilibili.com/x/web-interface/wbi/search/all/v2?${signedQuery({ search_type: 'video', keyword, page: sourcePage }, key)}`
   let response = await fetchJson(requestUrl)
   if (response.code === -403) {
     state.wbi = null
     const retryKey = await getWbiKey()
     response = await fetchJson(
-      `https://api.bilibili.com/x/web-interface/wbi/search/all/v2?${signedQuery({ search_type: 'video', keyword, page: currentPage }, retryKey)}`
+      `https://api.bilibili.com/x/web-interface/wbi/search/all/v2?${signedQuery({ search_type: 'video', keyword, page: sourcePage }, retryKey)}`
     )
   }
   if (response.code !== 0) throw new Error(response.message || 'Bilibili search failed.')
@@ -144,14 +136,78 @@ async function search(query, page) {
   const videos = (videoGroup?.data || [])
     .map(toVideo)
     .filter((video) => video.id && video.webpageUrl)
-    .slice(0, 10)
-  const hasNext = rawTotalPages > 0 ? currentPage < rawTotalPages : videos.length > 0
-  const totalPages = rawTotalPages > 0 ? Math.max(1, rawTotalPages) : null
+
+  return {
+    videos,
+    sourcePage,
+    totalSourcePages: rawTotalPages > 0 ? Math.max(1, rawTotalPages) : null
+  }
+}
+
+async function search(query, page, requestedPageSize) {
+  const keyword = String(query || '').trim()
+  const pageSize = Math.max(
+    1,
+    Math.min(MAX_PAGE_SIZE, Math.trunc(Number(requestedPageSize) || DEFAULT_PAGE_SIZE))
+  )
+  if (!keyword)
+    return {
+      ok: true,
+      videos: [],
+      page: 1,
+      pageSize,
+      totalPages: 1,
+      hasPrev: false,
+      hasNext: false
+    }
+
+  const currentPage = Math.max(1, Math.trunc(Number(page) || 1))
+  const startIndex = (currentPage - 1) * pageSize
+  const endIndex = startIndex + pageSize
+  const cacheKey = keyword.toLocaleLowerCase()
+  let searchState = searchStates.get(cacheKey)
+  if (!searchState || Date.now() - searchState.updatedAt > SEARCH_TTL_MS) {
+    searchState = {
+      videos: [],
+      videoIds: new Set(),
+      nextSourcePage: 1,
+      totalSourcePages: null,
+      exhausted: false,
+      updatedAt: Date.now()
+    }
+    searchStates.set(cacheKey, searchState)
+  }
+
+  let fetchedPageCount = 0
+  while (searchState.videos.length < endIndex && !searchState.exhausted && fetchedPageCount < 10) {
+    fetchedPageCount += 1
+    const result = await fetchSearchPage(keyword, searchState.nextSourcePage)
+    const sourceVideoCount = result.videos.length
+    for (const video of result.videos) {
+      if (searchState.videoIds.has(video.id)) continue
+      searchState.videoIds.add(video.id)
+      searchState.videos.push(video)
+    }
+
+    searchState.totalSourcePages = result.totalSourcePages
+    searchState.nextSourcePage = result.sourcePage + 1
+    searchState.updatedAt = Date.now()
+    searchState.exhausted =
+      sourceVideoCount === 0 ||
+      (searchState.totalSourcePages !== null && result.sourcePage >= searchState.totalSourcePages)
+  }
+
+  const videos = searchState.videos.slice(startIndex, endIndex)
+  const hasNext = searchState.videos.length > endIndex || !searchState.exhausted
+  const totalPages = searchState.exhausted
+    ? Math.max(1, Math.ceil(searchState.videos.length / pageSize))
+    : null
+
   return {
     ok: true,
     videos,
     page: currentPage,
-    pageSize: 10,
+    pageSize,
     totalPages,
     hasPrev: currentPage > 1,
     hasNext
@@ -192,14 +248,14 @@ export function register({ ipcMain, plugin, getConfig, channelPrefix }) {
   ipcMain.handle(`${channelPrefix}:recommend`, async (_event, payload) => {
     try {
       const query = String(getConfig().recommendationQuery || '').trim()
-      return { ...(await search(query, payload?.page)), query }
+      return { ...(await search(query, payload?.page, payload?.pageSize)), query }
     } catch (error) {
       return { ok: false, error: error.message }
     }
   })
   ipcMain.handle(`${channelPrefix}:search`, async (_event, payload) => {
     try {
-      return await search(payload?.query, payload?.page)
+      return await search(payload?.query, payload?.page, payload?.pageSize)
     } catch (error) {
       return { ok: false, error: error.message }
     }

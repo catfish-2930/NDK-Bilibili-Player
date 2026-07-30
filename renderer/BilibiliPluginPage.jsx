@@ -1,7 +1,10 @@
 import PropTypes from 'prop-types'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Search } from 'lucide-react'
 import './BilibiliPluginPage.css'
+
+const LANDSCAPE_PAGE_SIZE = 10
+const PORTRAIT_COLUMNS = 2
 
 function BilibiliIcon() {
   return (
@@ -37,61 +40,109 @@ function BilibiliPluginPage({ onEnqueueMedia, onShowToast, KeyboardComponent }) 
   const [keyboardOpen, setKeyboardOpen] = useState(false)
   const [partPicker, setPartPicker] = useState(null)
   const [queueingAllParts, setQueueingAllParts] = useState(false)
+  const [pageSize, setPageSize] = useState(null)
+  const videoGridRef = useRef(null)
+  const activeRequestRef = useRef({ mode: 'recommend', query: '' })
+  const loadRequestIdRef = useRef(0)
 
-  const load = async (nextQuery, nextPage = 1) => {
-    const keyword = String(nextQuery || '').trim()
-    if (!keyword) {
-      setVideos([])
-      setMessage('请输入关键词搜索 Bilibili 视频。')
+  const updatePageSize = useCallback(() => {
+    const grid = videoGridRef.current
+    if (!grid) return
+
+    const portrait = Boolean(grid.closest('.main-screen-frame--portrait'))
+    if (!portrait) {
+      setPageSize((current) => (current === LANDSCAPE_PAGE_SIZE ? current : LANDSCAPE_PAGE_SIZE))
       return
     }
-    setLoading(true)
-    setMessage('')
-    try {
-      const result = await window.api.plugins.invoke('plugin:bilibili-player:search', {
-        query: keyword,
-        page: nextPage
-      })
-      if (!result?.ok) throw new Error(result?.error || 'Bilibili search failed.')
-      if (nextPage > 1 && !result.videos?.length) {
+
+    const gridStyle = window.getComputedStyle(grid)
+    const columnGap = Number.parseFloat(gridStyle.columnGap) || 0
+    const rowGap = Number.parseFloat(gridStyle.rowGap) || 0
+    const availableWidth = grid.clientWidth
+    const availableHeight = grid.clientHeight
+    if (availableWidth <= 0 || availableHeight <= 0) return
+
+    const cardWidth = (availableWidth - columnGap * (PORTRAIT_COLUMNS - 1)) / PORTRAIT_COLUMNS
+    const estimatedCardHeight = (cardWidth * 9) / 16 + 7 + 16 * 1.2 * 2 + 3 + 13 * 1.2
+    const renderedCard = grid.querySelector('.bilibili-video-card')
+    const cardHeight = Math.max(estimatedCardHeight, renderedCard?.scrollHeight || 0)
+    const visibleRows = Math.max(1, Math.floor((availableHeight + rowGap) / (cardHeight + rowGap)))
+    const nextPageSize = visibleRows * PORTRAIT_COLUMNS
+
+    setPageSize((current) => (current === nextPageSize ? current : nextPageSize))
+  }, [])
+
+  const loadVideos = useCallback(
+    async ({ mode, query: nextQuery, page: nextPage = 1 }) => {
+      if (!pageSize) return
+
+      const keyword = String(nextQuery || '').trim()
+      if (mode === 'search' && !keyword) {
+        setVideos([])
+        setPage(1)
+        setTotalPages(1)
         setHasNext(false)
-        setTotalPages(page)
-        setMessage('已到最后一页。')
+        setMessage('请输入关键词搜索 Bilibili 视频。')
         return
       }
-      setVideos(Array.isArray(result.videos) ? result.videos : [])
-      setPage(Number(result.page || nextPage))
-      setTotalPages(result.totalPages ? Math.max(1, Number(result.totalPages)) : null)
-      setHasNext(Boolean(result.hasNext))
-      if (!result.videos?.length) setMessage('没有找到视频。')
-    } catch (error) {
-      setVideos([])
-      setMessage(error.message || 'Bilibili search failed.')
-    } finally {
-      setLoading(false)
-    }
-  }
 
-  const loadRecommendation = async () => {
-    setLoading(true)
-    setMessage('')
-    try {
-      const result = await window.api.plugins.invoke('plugin:bilibili-player:recommend', {
-        page: 1
-      })
-      if (!result?.ok) throw new Error(result?.error || 'Bilibili recommendation failed.')
-      setQuery(String(result.query || ''))
-      setVideos(Array.isArray(result.videos) ? result.videos : [])
-      setPage(Number(result.page || 1))
-      setTotalPages(result.totalPages ? Math.max(1, Number(result.totalPages)) : null)
-      setHasNext(Boolean(result.hasNext))
-      if (!result.videos?.length) setMessage('No videos found.')
-    } catch (error) {
-      setVideos([])
-      setMessage(error.message || 'Bilibili recommendation failed.')
-    } finally {
-      setLoading(false)
-    }
+      const requestId = loadRequestIdRef.current + 1
+      loadRequestIdRef.current = requestId
+      setLoading(true)
+      setMessage('')
+
+      try {
+        const channel =
+          mode === 'recommend'
+            ? 'plugin:bilibili-player:recommend'
+            : 'plugin:bilibili-player:search'
+        const payload =
+          mode === 'recommend'
+            ? { page: nextPage, pageSize }
+            : { query: keyword, page: nextPage, pageSize }
+        const result = await window.api.plugins.invoke(channel, payload)
+        if (requestId !== loadRequestIdRef.current) return
+        if (!result?.ok) {
+          throw new Error(
+            result?.error ||
+              (mode === 'recommend' ? 'Bilibili recommendation failed.' : 'Bilibili search failed.')
+          )
+        }
+
+        if (mode === 'recommend') setQuery(String(result.query || ''))
+        if (nextPage > 1 && !result.videos?.length) {
+          setHasNext(false)
+          setTotalPages(Math.max(1, nextPage - 1))
+          setMessage('已到最后一页。')
+          return
+        }
+
+        setVideos(Array.isArray(result.videos) ? result.videos : [])
+        setPage(Number(result.page || nextPage))
+        setTotalPages(result.totalPages ? Math.max(1, Number(result.totalPages)) : null)
+        setHasNext(Boolean(result.hasNext))
+        if (!result.videos?.length) setMessage('没有找到视频。')
+      } catch (error) {
+        if (requestId !== loadRequestIdRef.current) return
+
+        setVideos([])
+        setMessage(
+          error.message ||
+            (mode === 'recommend' ? 'Bilibili recommendation failed.' : 'Bilibili search failed.')
+        )
+      } finally {
+        if (requestId === loadRequestIdRef.current) {
+          setLoading(false)
+        }
+      }
+    },
+    [pageSize]
+  )
+
+  const handleSearch = () => {
+    const request = { mode: 'search', query: query.trim() }
+    activeRequestRef.current = request
+    loadVideos({ ...request, page: 1 })
   }
 
   const enqueue = async (video) => {
@@ -158,8 +209,27 @@ function BilibiliPluginPage({ onEnqueueMedia, onShowToast, KeyboardComponent }) 
   }
 
   useEffect(() => {
-    loadRecommendation()
-  }, [])
+    const grid = videoGridRef.current
+    if (!grid) return undefined
+
+    const resizeObserver = new ResizeObserver(updatePageSize)
+    resizeObserver.observe(grid)
+    updatePageSize()
+
+    return () => resizeObserver.disconnect()
+  }, [updatePageSize])
+
+  useEffect(() => {
+    if (!pageSize) return
+
+    loadVideos({ ...activeRequestRef.current, page: 1 })
+  }, [loadVideos, pageSize])
+
+  useEffect(() => {
+    const animationFrame = window.requestAnimationFrame(updatePageSize)
+    return () => window.cancelAnimationFrame(animationFrame)
+  }, [videos, updatePageSize])
+
   const onKey = (key) =>
     setQuery((value) =>
       key === 'BACKSPACE'
@@ -176,7 +246,7 @@ function BilibiliPluginPage({ onEnqueueMedia, onShowToast, KeyboardComponent }) 
         <BilibiliIcon />
         <span>Bilibili</span>
       </div>
-      <div className="bilibili-video-grid">
+      <div className="bilibili-video-grid" ref={videoGridRef}>
         {!loading &&
           videos.map((video) => (
             <button
@@ -215,11 +285,11 @@ function BilibiliPluginPage({ onEnqueueMedia, onShowToast, KeyboardComponent }) 
             onChange={(e) => setQuery(e.target.value)}
             onFocus={() => setKeyboardOpen(true)}
             onClick={() => setKeyboardOpen(true)}
-            onKeyDown={(e) => e.key === 'Enter' && load(query)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             inputMode="none"
             placeholder="请输入关键词搜索 Bilibili"
           />
-          <button type="button" onClick={() => load(query)}>
+          <button type="button" onClick={handleSearch}>
             <Search size={28} />
           </button>
         </div>
@@ -227,7 +297,7 @@ function BilibiliPluginPage({ onEnqueueMedia, onShowToast, KeyboardComponent }) 
           <button
             type="button"
             disabled={loading || page <= 1}
-            onClick={() => load(query, page - 1)}
+            onClick={() => loadVideos({ ...activeRequestRef.current, page: page - 1 })}
           >
             <ChevronLeft />
             上一页
@@ -236,7 +306,7 @@ function BilibiliPluginPage({ onEnqueueMedia, onShowToast, KeyboardComponent }) 
           <button
             type="button"
             disabled={loading || !hasNext}
-            onClick={() => load(query, page + 1)}
+            onClick={() => loadVideos({ ...activeRequestRef.current, page: page + 1 })}
           >
             下一页
             <ChevronRight />
@@ -294,7 +364,7 @@ function BilibiliPluginPage({ onEnqueueMedia, onShowToast, KeyboardComponent }) 
           onText={(text) => setQuery((value) => `${value}${text || ''}`)}
           onConfirm={() => {
             setKeyboardOpen(false)
-            load(query)
+            handleSearch()
           }}
           displayValue={query}
         />
