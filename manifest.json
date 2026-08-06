@@ -1,6 +1,6 @@
 {
   "id": "bilibili-player",
-  "name": "NDK-Bilibili Player",
+  "name": "Bilibili",
   "version": "0.1.2",
   "description": "Search Bilibili videos and add their webpage URLs to the playback queue.",
   "type": "Multimedia",
